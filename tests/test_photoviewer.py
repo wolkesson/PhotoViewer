@@ -40,12 +40,17 @@ class PhotoViewerTests(unittest.TestCase):
     def test_zoom_helpers_match_fit_fill_rules(self) -> None:
         media_size = (200, 100)
         viewport_size = (300, 300)
+        fit_scale = scale_to_fit(media_size, viewport_size)
+        fill_scale = scale_to_fill(media_size, viewport_size)
 
-        self.assertEqual(scale_to_fit(media_size, viewport_size), 1.5)
-        self.assertEqual(scale_to_fill(media_size, viewport_size), 3.0)
-        self.assertEqual(resolve_zoom_scale("fit", 9.0, media_size, viewport_size), 1.5)
-        self.assertEqual(resolve_zoom_scale("fill", 1.5, media_size, viewport_size), 3.0)
-        self.assertEqual(resolve_zoom_scale("manual", 1.0, media_size, viewport_size), 1.5)
+        self.assertEqual(fit_scale, 1.5)
+        self.assertEqual(fill_scale, 3.0)
+        self.assertEqual(resolve_zoom_scale("fit", 9.0, media_size, viewport_size), fit_scale)
+        self.assertEqual(resolve_zoom_scale("fill", fit_scale, media_size, viewport_size), fill_scale)
+        self.assertEqual(
+            resolve_zoom_scale("manual", 1.0, media_size, viewport_size),
+            fit_scale,
+        )
         self.assertEqual(resolve_zoom_scale("manual", 2.0, media_size, viewport_size), 2.0)
 
     def test_slideshow_seconds_has_reasonable_minimum(self) -> None:
