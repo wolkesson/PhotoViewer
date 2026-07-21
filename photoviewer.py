@@ -89,9 +89,7 @@ def resolve_zoom_scale(
 
 def calculate_video_duration_seconds(frame_count: float, fps: float) -> float:
     if (
-        not frame_count
-        or not fps
-        or math.isnan(frame_count)
+        math.isnan(frame_count)
         or math.isnan(fps)
         or frame_count <= 0
         or fps <= 0

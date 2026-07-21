@@ -3,6 +3,8 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
+import cv2
+
 from photoviewer import (
     MediaViewerApp,
     MediaPlaylist,
@@ -82,8 +84,7 @@ class PhotoViewerTests(unittest.TestCase):
         app.on_timeline_change("12")
 
         app.root.after_cancel.assert_called_once_with("after-1")
-        app.video_capture.set.assert_called_once()
-        self.assertEqual(app.video_capture.set.call_args.args[1], 10000.0)
+        app.video_capture.set.assert_called_once_with(cv2.CAP_PROP_POS_MSEC, 10000.0)
         app.advance_video_frame.assert_called_once()
 
 
