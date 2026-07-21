@@ -282,9 +282,9 @@ class MediaViewerApp:
 
     def show_timeline(self) -> None:
         self.timeline.configure(to=max(self.video_duration_seconds, 1.0))
-        self.timeline.configure(state=self.tk.NORMAL if self.video_duration_seconds > 0 else self.tk.DISABLED)
+        self.timeline.configure(state="normal" if self.video_duration_seconds > 0 else "disabled")
         if not self.timeline_visible:
-            self.timeline.pack(fill=self.tk.X, side=self.tk.BOTTOM, before=self.status)
+            self.timeline.pack(fill="x", side="bottom", before=self.status)
             self.timeline_visible = True
         self.timeline_var.set(0.0)
 
