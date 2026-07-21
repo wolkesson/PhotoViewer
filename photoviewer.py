@@ -30,6 +30,8 @@ VIDEO_SUFFIXES = {
     ".wmv",
 }
 MEDIA_SUFFIXES = IMAGE_SUFFIXES | VIDEO_SUFFIXES
+MS_PER_SECOND = 1000.0
+MIN_TIMELINE_RANGE_SECONDS = 1.0
 
 ZoomMode = Literal["fit", "fill", "manual"]
 
@@ -247,7 +249,7 @@ class MediaViewerApp:
         if not capture.isOpened():
             raise RuntimeError(f"Unable to open video: {path}")
         fps = capture.get(cv2.CAP_PROP_FPS)
-        self.video_frame_delay_ms = max(15, int(1000 / fps)) if fps and not math.isnan(fps) else 40
+        self.video_frame_delay_ms = max(15, int(MS_PER_SECOND / fps)) if fps and not math.isnan(fps) else 40
         frame_count = capture.get(cv2.CAP_PROP_FRAME_COUNT)
         self.video_duration_seconds = calculate_video_duration_seconds(frame_count, fps)
         self.video_capture = capture
@@ -279,7 +281,7 @@ class MediaViewerApp:
         self.video_after_id = self.root.after(self.video_frame_delay_ms, self.advance_video_frame)
 
     def show_timeline(self) -> None:
-        self.timeline.configure(to=max(self.video_duration_seconds, 1.0))
+        self.timeline.configure(to=max(self.video_duration_seconds, MIN_TIMELINE_RANGE_SECONDS))
         self.timeline.configure(state="normal" if self.video_duration_seconds > 0 else "disabled")
         if not self.timeline_visible:
             self.timeline.pack(fill="x", side="bottom", before=self.status)
@@ -297,7 +299,7 @@ class MediaViewerApp:
         position_ms = self.video_capture.get(cv2.CAP_PROP_POS_MSEC)
         if not position_ms or math.isnan(position_ms):
             return
-        position_seconds = clamp_video_seek_seconds(position_ms / 1000.0, self.video_duration_seconds)
+        position_seconds = clamp_video_seek_seconds(position_ms / MS_PER_SECOND, self.video_duration_seconds)
         self.timeline_updating = True
         self.timeline_var.set(position_seconds)
         self.timeline_updating = False
@@ -309,7 +311,7 @@ class MediaViewerApp:
         if self.video_after_id is not None:
             self.root.after_cancel(self.video_after_id)
             self.video_after_id = None
-        self.video_capture.set(cv2.CAP_PROP_POS_MSEC, position_seconds * 1000)
+        self.video_capture.set(cv2.CAP_PROP_POS_MSEC, position_seconds * MS_PER_SECOND)
         self.advance_video_frame()
 
     def render_current_frame(self) -> None:
