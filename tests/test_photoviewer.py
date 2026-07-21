@@ -81,10 +81,10 @@ class PhotoViewerTests(unittest.TestCase):
         app.root = mock.Mock()
         app.advance_video_frame = mock.Mock()
 
-        app.on_timeline_change("12")
+        app.on_timeline_change("5")
 
         app.root.after_cancel.assert_called_once_with("after-1")
-        app.video_capture.set.assert_called_once_with(cv2.CAP_PROP_POS_MSEC, 10000.0)
+        app.video_capture.set.assert_called_once_with(cv2.CAP_PROP_POS_MSEC, 5000.0)
         app.advance_video_frame.assert_called_once()
 
 

@@ -302,7 +302,7 @@ class MediaViewerApp:
         self.timeline_var.set(position_seconds)
         self.timeline_updating = False
 
-    def on_timeline_change(self, value: str) -> None:
+    def on_timeline_change(self, value: str | float) -> None:
         if self.video_capture is None or self.timeline_updating or self.video_duration_seconds <= 0:
             return
         position_seconds = clamp_video_seek_seconds(float(value), self.video_duration_seconds)
