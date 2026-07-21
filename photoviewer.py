@@ -328,14 +328,17 @@ class MediaViewerApp:
 
     def cursor_canvas_position(self, event) -> tuple[float, float]:
         viewport_width, viewport_height = self.current_viewport_size()
-        x_root = getattr(event, "x_root", None)
-        y_root = getattr(event, "y_root", None)
-        if x_root is not None and y_root is not None:
-            cursor_x = x_root - self.canvas.winfo_rootx()
-            cursor_y = y_root - self.canvas.winfo_rooty()
-        else:
-            cursor_x = getattr(event, "x", viewport_width / 2)
-            cursor_y = getattr(event, "y", viewport_height / 2)
+        cursor_x = self.root.winfo_pointerx() - self.canvas.winfo_rootx()
+        cursor_y = self.root.winfo_pointery() - self.canvas.winfo_rooty()
+        if cursor_x == 0 and cursor_y == 0:
+            x_root = getattr(event, "x_root", None)
+            y_root = getattr(event, "y_root", None)
+            if x_root is not None and y_root is not None:
+                cursor_x = x_root - self.canvas.winfo_rootx()
+                cursor_y = y_root - self.canvas.winfo_rooty()
+            else:
+                cursor_x = getattr(event, "x", viewport_width / 2)
+                cursor_y = getattr(event, "y", viewport_height / 2)
         return (
             min(max(cursor_x, 0), viewport_width),
             min(max(cursor_y, 0), viewport_height),
