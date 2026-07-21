@@ -330,7 +330,7 @@ class MediaViewerApp:
         viewport_width, viewport_height = self.current_viewport_size()
         pointer_x = self.root.winfo_pointerx()
         pointer_y = self.root.winfo_pointery()
-        if pointer_x >= 0 and pointer_y >= 0:
+        if pointer_x != -1 and pointer_y != -1:
             cursor_x = pointer_x - self.canvas.winfo_rootx()
             cursor_y = pointer_y - self.canvas.winfo_rooty()
         else:
