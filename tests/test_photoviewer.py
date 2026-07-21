@@ -1,10 +1,14 @@
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from photoviewer import (
+    MediaViewerApp,
     MediaPlaylist,
+    calculate_video_duration_seconds,
     clamp_slideshow_seconds,
+    clamp_video_seek_seconds,
     list_media_files,
     resolve_zoom_scale,
     scale_to_fill,
@@ -56,6 +60,31 @@ class PhotoViewerTests(unittest.TestCase):
     def test_slideshow_seconds_has_reasonable_minimum(self) -> None:
         self.assertEqual(clamp_slideshow_seconds(0.1), 0.5)
         self.assertEqual(clamp_slideshow_seconds(4), 4.0)
+
+    def test_video_timeline_helpers_handle_edge_cases(self) -> None:
+        self.assertEqual(calculate_video_duration_seconds(300, 30), 10.0)
+        self.assertEqual(calculate_video_duration_seconds(0, 30), 0.0)
+        self.assertEqual(calculate_video_duration_seconds(300, 0), 0.0)
+        self.assertEqual(clamp_video_seek_seconds(-1, 10), 0.0)
+        self.assertEqual(clamp_video_seek_seconds(5, 10), 5.0)
+        self.assertEqual(clamp_video_seek_seconds(11, 10), 10.0)
+        self.assertEqual(clamp_video_seek_seconds(5, 0), 0.0)
+
+    def test_video_timeline_change_seeks_playback(self) -> None:
+        app = MediaViewerApp.__new__(MediaViewerApp)
+        app.video_capture = mock.Mock()
+        app.timeline_updating = False
+        app.video_duration_seconds = 10.0
+        app.video_after_id = "after-1"
+        app.root = mock.Mock()
+        app.advance_video_frame = mock.Mock()
+
+        app.on_timeline_change("12")
+
+        app.root.after_cancel.assert_called_once_with("after-1")
+        app.video_capture.set.assert_called_once()
+        self.assertEqual(app.video_capture.set.call_args.args[1], 10000.0)
+        app.advance_video_frame.assert_called_once()
 
 
 if __name__ == "__main__":
