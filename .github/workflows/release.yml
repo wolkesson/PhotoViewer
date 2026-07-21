@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -28,3 +31,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/PhotoViewer.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
