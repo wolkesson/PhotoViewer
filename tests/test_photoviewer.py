@@ -111,6 +111,21 @@ class PhotoViewerTests(unittest.TestCase):
         app.video_capture.set.assert_called_once_with(cv2.CAP_PROP_POS_MSEC, 5000.0)
         app.advance_video_frame.assert_called_once()
 
+    def test_video_timeline_change_replaces_existing_pending_seek(self) -> None:
+        app = MediaViewerApp.__new__(MediaViewerApp)
+        app.video_capture = mock.Mock()
+        app.timeline_updating = False
+        app.video_duration_seconds = 10.0
+        app.timeline_seek_after_id = "seek-old"
+        app.root = mock.Mock()
+        app.root.after.return_value = "seek-new"
+
+        app.on_timeline_change("7")
+
+        app.root.after_cancel.assert_called_once_with("seek-old")
+        self.assertEqual(app.timeline_seek_after_id, "seek-new")
+        self.assertEqual(app.timeline_pending_seek_seconds, 7.0)
+
 
 if __name__ == "__main__":
     unittest.main()

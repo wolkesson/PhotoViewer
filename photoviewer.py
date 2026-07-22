@@ -316,6 +316,7 @@ class MediaViewerApp:
         self.timeline_pending_seek_seconds = clamp_video_seek_seconds(float(value), self.video_duration_seconds)
         if self.timeline_seek_after_id is not None:
             self.root.after_cancel(self.timeline_seek_after_id)
+            self.timeline_seek_after_id = None
         self.timeline_seek_after_id = self.root.after(
             TIMELINE_SEEK_DEBOUNCE_MS,
             self.apply_pending_timeline_seek,
