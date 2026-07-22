@@ -182,6 +182,14 @@ class UpscalerTests(unittest.TestCase):
             upscaler = Upscaler(Path(tmp))
             self.assertTrue(upscaler.available(2))
 
+    def test_available_returns_false_when_dnn_superres_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "ESPCN_x2.pb").write_bytes(b"dummy")
+            upscaler = Upscaler(Path(tmp))
+            # Simulate cv2 built without contrib (no dnn_superres attribute).
+            with mock.patch("photoviewer.cv2", mock.MagicMock(spec=[])):
+                self.assertFalse(upscaler.available(2))
+
     def test_available_returns_false_for_unsupported_scale(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "ESPCN_x3.pb").write_bytes(b"dummy")

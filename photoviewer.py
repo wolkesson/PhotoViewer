@@ -60,8 +60,12 @@ class Upscaler:
         return self._models_dir / f"ESPCN_x{scale}.pb"
 
     def available(self, scale: int) -> bool:
-        """Return True only if the model file for *scale* exists on disk."""
-        return scale in self.SUPPORTED_SCALES and self._model_path(scale).exists()
+        """Return True only if dnn_superres is present and the model file for *scale* exists on disk."""
+        return (
+            hasattr(cv2, "dnn_superres")
+            and scale in self.SUPPORTED_SCALES
+            and self._model_path(scale).exists()
+        )
 
     def _load(self, scale: int) -> object:
         if scale not in self._loaded:
@@ -325,7 +329,12 @@ class MediaViewerApp:
 
     def update_status(self) -> None:
         mode = "slideshow on" if self.slideshow_enabled else "slideshow off"
-        ai_mode = "AI upscale: on" if self.ai_upscale_enabled else "AI upscale: off"
+        if not hasattr(cv2, "dnn_superres"):
+            ai_mode = "AI upscale: unavailable (install opencv-contrib-python)"
+        elif self.ai_upscale_enabled:
+            ai_mode = "AI upscale: on"
+        else:
+            ai_mode = "AI upscale: off"
         self.status_var.set(
             f"{self.current_path().name}  |  {self.playlist.index + 1}/{len(self.playlist.files)}"
             f"  |  {mode} ({self.config.slideshow_seconds:g}s)  |  {ai_mode}"
