@@ -295,7 +295,12 @@ class MediaViewerApp:
             viewport_size,
         )
         fit_scale = scale_to_fit(self.current_image.size, viewport_size)
-        new_scale = max(fit_scale, current_scale * factor)
+        new_scale = current_scale * factor
+        if new_scale <= fit_scale:
+            self.zoom_mode = "fit"
+            self.image_center = None
+            self.render_current_frame()
+            return
         anchor = focus_point or self.viewport_center(viewport_size)
         current_center = self.image_center or self.viewport_center(viewport_size)
         if current_scale > 0:
