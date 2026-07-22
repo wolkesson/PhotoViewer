@@ -142,6 +142,8 @@ class MediaViewerApp:
         self.slideshow_after_id: str | None = None
         self.slideshow_enabled = False
         self.video_frame_delay_ms = 40
+        self._vlc_instance = None
+        self._vlc_player = None
 
         self.root.bind("<Left>", lambda event: self.show_relative(-1))
         self.root.bind("<Right>", lambda event: self.show_relative(1))
@@ -205,6 +207,35 @@ class MediaViewerApp:
         )
 
     def start_video(self, path: Path) -> None:
+        try:
+            import vlc as _vlc
+        except ImportError:
+            _vlc = None
+
+        if _vlc is not None:
+            self._start_vlc_video(path, _vlc)
+        else:
+            self._start_cv2_video(path)
+
+    def _start_vlc_video(self, path: Path, vlc) -> None:
+        self.current_image = None
+        self._vlc_instance = vlc.Instance()
+        self._vlc_player = self._vlc_instance.media_player_new()
+        media = self._vlc_instance.media_new(str(path))
+        self._vlc_player.set_media(media)
+        self.root.update_idletasks()
+        wid = self.canvas.winfo_id()
+        if sys.platform == "win32":
+            self._vlc_player.set_hwnd(wid)
+        elif sys.platform == "darwin":
+            self._vlc_player.set_nsobject(wid)
+        else:
+            self._vlc_player.set_xwindow(wid)
+        em = self._vlc_player.event_manager()
+        em.event_attach(vlc.EventType.MediaPlayerEndReached, self._on_vlc_end)
+        self._vlc_player.play()
+
+    def _start_cv2_video(self, path: Path) -> None:
         capture = cv2.VideoCapture(str(path))
         if not capture.isOpened():
             raise RuntimeError(f"Unable to open video: {path}")
@@ -213,6 +244,14 @@ class MediaViewerApp:
         self.video_capture = capture
         self.advance_video_frame()
 
+    def _on_vlc_end(self, event) -> None:
+        self.root.after(0, self._handle_video_end)
+
+    def _handle_video_end(self) -> None:
+        self.stop_video()
+        if self.slideshow_enabled:
+            self.show_relative(1)
+
     def stop_video(self) -> None:
         if self.video_after_id is not None:
             self.root.after_cancel(self.video_after_id)
@@ -220,6 +259,13 @@ class MediaViewerApp:
         if self.video_capture is not None:
             self.video_capture.release()
             self.video_capture = None
+        if self._vlc_player is not None:
+            self._vlc_player.stop()
+            self._vlc_player.release()
+            self._vlc_player = None
+        if self._vlc_instance is not None:
+            self._vlc_instance.release()
+            self._vlc_instance = None
 
     def advance_video_frame(self) -> None:
         if self.video_capture is None:
@@ -247,7 +293,10 @@ class MediaViewerApp:
         )
         width = max(1, int(round(self.current_image.width * scale)))
         height = max(1, int(round(self.current_image.height * scale)))
-        resized = self.current_image.resize((width, height), Image.Resampling.LANCZOS)
+        resized = self.current_image.resize(
+            (width, height),
+            Image.Resampling.BILINEAR if self.video_capture is not None else Image.Resampling.LANCZOS,
+        )
         self.current_photo = self.ImageTk.PhotoImage(resized)
         self.canvas.delete("all")
         self.canvas.create_image(

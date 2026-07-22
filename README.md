@@ -21,6 +21,10 @@ python -m pip install -r requirements.txt
 python photoviewer.py /path/to/media-file
 ```
 
+Video playback uses [VLC](https://www.videolan.org/vlc/) for hardware-accelerated decoding when available.
+Install VLC on your system to enable GPU-accelerated video (NVDEC, VAAPI, VideoToolbox, etc.).
+Without VLC the app falls back to software decoding via OpenCV.
+
 You can also omit the path and choose a media file from the file picker:
 
 ```bash
