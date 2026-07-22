@@ -391,6 +391,55 @@ class MediaViewerApp:
         if self.slideshow_enabled:
             self.show_relative(1)
 
+    def _current_media_size(self) -> tuple[int, int] | None:
+        if self.current_image is not None:
+            return self.current_image.size
+        if self._vlc_player is not None:
+            size = self._vlc_player.video_get_size(0)
+            if size and size != (0, 0):
+                return size
+        return None
+
+    def _apply_vlc_zoom(self) -> None:
+        if self._vlc_player is None:
+            return
+        video_size = self._vlc_player.video_get_size(0)
+        if not video_size or video_size == (0, 0):
+            return
+        nw, nh = video_size
+        viewport_size = self.current_viewport_size()
+        vw, vh = viewport_size
+        s = resolve_zoom_scale(self.zoom_mode, self.manual_scale, (nw, nh), viewport_size)
+        if s <= 0:
+            return
+        cx, cy = self.image_center or self.viewport_center(viewport_size)
+        crop_w = vw / s
+        crop_h = vh / s
+        # Crop covers the full video or more — use VLC auto-fit (no explicit crop)
+        if crop_w >= nw and crop_h >= nh:
+            self._vlc_player.video_set_crop_geometry(None)
+            self._vlc_player.video_set_scale(0)
+            return
+        crop_x = nw / 2 - cx / s
+        crop_y = nh / 2 - cy / s
+        # Clamp crop origin so the crop region stays within the native frame
+        if crop_w <= nw:
+            crop_x = max(0.0, min(crop_x, nw - crop_w))
+        else:
+            crop_x = 0.0
+        if crop_h <= nh:
+            crop_y = max(0.0, min(crop_y, nh - crop_h))
+        else:
+            crop_y = 0.0
+        crop_w = min(crop_w, nw)
+        crop_h = min(crop_h, nh)
+        geometry = (
+            f"{int(round(crop_w))}x{int(round(crop_h))}"
+            f"+{int(round(crop_x))}+{int(round(crop_y))}"
+        )
+        self._vlc_player.video_set_crop_geometry(geometry)
+        self._vlc_player.video_set_scale(0)
+
     def stop_video(self) -> None:
         if self.timeline_seek_after_id is not None:
             self.root.after_cancel(self.timeline_seek_after_id)
@@ -474,6 +523,9 @@ class MediaViewerApp:
         self.advance_video_frame()
 
     def render_current_frame(self) -> None:
+        if self._vlc_player is not None:
+            self._apply_vlc_zoom()
+            return
         if self.current_image is None:
             return
         viewport_size = self.current_viewport_size()
@@ -552,16 +604,17 @@ class MediaViewerApp:
         self.render_current_frame()
 
     def adjust_zoom(self, factor: float, focus_point: tuple[float, float] | None = None) -> None:
-        if self.current_image is None:
+        media_size = self._current_media_size()
+        if media_size is None:
             return
         viewport_size = self.current_viewport_size()
         current_scale = resolve_zoom_scale(
             self.zoom_mode,
             self.manual_scale,
-            self.current_image.size,
+            media_size,
             viewport_size,
         )
-        fit_scale = scale_to_fit(self.current_image.size, viewport_size)
+        fit_scale = scale_to_fit(media_size, viewport_size)
         new_scale = current_scale * factor
         if new_scale <= fit_scale:
             self.zoom_mode = "fit"
@@ -591,16 +644,17 @@ class MediaViewerApp:
         self.render_current_frame()
 
     def pan(self, dx: float, dy: float) -> None:
-        if self.current_image is None:
+        media_size = self._current_media_size()
+        if media_size is None:
             return
         viewport_size = self.current_viewport_size()
         current_scale = resolve_zoom_scale(
             self.zoom_mode,
             self.manual_scale,
-            self.current_image.size,
+            media_size,
             viewport_size,
         )
-        if current_scale <= scale_to_fit(self.current_image.size, viewport_size):
+        if current_scale <= scale_to_fit(media_size, viewport_size):
             return
         current_center = self.image_center or self.viewport_center(viewport_size)
         self.image_center = (current_center[0] + dx, current_center[1] + dy)
