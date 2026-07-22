@@ -16,6 +16,7 @@ from photoviewer import (
     resolve_zoom_scale,
     scale_to_fill,
     scale_to_fit,
+    zoom_towards_point,
 )
 
 
@@ -141,6 +142,16 @@ class PhotoViewerTests(unittest.TestCase):
 
         app.video_capture.set.assert_called_once_with(cv2.CAP_PROP_POS_MSEC, 0.0)
         app.advance_video_frame.assert_called_once()
+
+    def test_zoom_towards_point_keeps_cursor_area_in_focus(self) -> None:
+        self.assertEqual(
+            zoom_towards_point((50.0, 50.0), (100.0, 50.0), 2.0),
+            (0.0, 50.0),
+        )
+        self.assertEqual(
+            zoom_towards_point((50.0, 50.0), (100.0, 50.0), 0.5),
+            (75.0, 50.0),
+        )
 
 
 if __name__ == "__main__":
