@@ -13,6 +13,8 @@ Simple photo and video viewer written in Python.
 - Down zooms in
 - Mouse wheel zooms in and out
 - Videos play automatically
+- Video playback shows a timeline and supports seeking by clicking/dragging
+- A toggles AI upscaling (ESPCN) when zoomed past original resolution
 
 ## Run locally
 
@@ -39,5 +41,5 @@ Optional flags:
 ## Build a single executable
 
 ```bash
-pyinstaller --onefile --windowed --name PhotoViewer photoviewer.py
+pyinstaller --onefile --windowed --name PhotoViewer --add-data "models:models" photoviewer.py
 ```
