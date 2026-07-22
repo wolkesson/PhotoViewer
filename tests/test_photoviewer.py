@@ -127,6 +127,21 @@ class PhotoViewerTests(unittest.TestCase):
         self.assertEqual(app.timeline_seek_after_id, "seek-new")
         self.assertEqual(app.timeline_pending_seek_seconds, 7.0)
 
+    def test_apply_pending_timeline_seek_handles_zero_seek_value(self) -> None:
+        app = MediaViewerApp.__new__(MediaViewerApp)
+        app.video_capture = mock.Mock()
+        app.video_duration_seconds = 10.0
+        app.timeline_pending_seek_seconds = 0.0
+        app.timeline_seek_after_id = "seek-1"
+        app.video_after_id = None
+        app.root = mock.Mock()
+        app.advance_video_frame = mock.Mock()
+
+        app.apply_pending_timeline_seek()
+
+        app.video_capture.set.assert_called_once_with(cv2.CAP_PROP_POS_MSEC, 0.0)
+        app.advance_video_frame.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

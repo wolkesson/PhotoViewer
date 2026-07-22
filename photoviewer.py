@@ -322,9 +322,9 @@ class MediaViewerApp:
         )
 
     def apply_pending_timeline_seek(self) -> None:
-        self.timeline_seek_after_id = None
         if self.video_capture is None or self.video_duration_seconds <= 0:
             return
+        self.timeline_seek_after_id = None
         if self.video_after_id is not None:
             self.root.after_cancel(self.video_after_id)
             self.video_after_id = None
