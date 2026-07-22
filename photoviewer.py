@@ -420,6 +420,11 @@ class MediaViewerApp:
             self._vlc_player.video_set_crop_geometry(None)
             self._vlc_player.video_set_scale(0)
             return
+        # Convert the viewport-center canvas position (cx, cy) to native video
+        # coordinates: at scale s, source pixel p maps to canvas position
+        # cx_image + (p - nw/2)*s, so the source pixel at viewport center is
+        # nw/2 + (vw/2 - cx)/s, and the crop top-left is that minus crop_w/2,
+        # which simplifies to nw/2 - cx/s.
         crop_x = nw / 2 - cx / s
         crop_y = nh / 2 - cy / s
         # Clamp crop origin so the crop region stays within the native frame
@@ -433,6 +438,8 @@ class MediaViewerApp:
             crop_y = 0.0
         crop_w = min(crop_w, nw)
         crop_h = min(crop_h, nh)
+        # VLC crop geometry format: "<width>x<height>+<left>+<top>" in native
+        # video pixels.  VLC then auto-fits the cropped region to the window.
         geometry = (
             f"{int(round(crop_w))}x{int(round(crop_h))}"
             f"+{int(round(crop_x))}+{int(round(crop_y))}"
