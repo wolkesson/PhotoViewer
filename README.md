@@ -13,6 +13,7 @@ Simple photo and video viewer written in Python.
 - Down zooms in
 - Mouse wheel zooms in and out
 - Videos play automatically
+- Video playback shows a timeline and supports seeking by clicking/dragging
 
 ## Run locally
 
