@@ -5,7 +5,7 @@ import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Literal
+from typing import Any, Iterable, Literal
 
 import cv2
 from PIL import Image, ImageOps
@@ -217,7 +217,7 @@ class MediaViewerApp:
         else:
             self._start_cv2_video(path)
 
-    def _start_vlc_video(self, path: Path, vlc) -> None:
+    def _start_vlc_video(self, path: Path, vlc: Any) -> None:
         self.current_image = None
         self._vlc_instance = vlc.Instance()
         self._vlc_player = self._vlc_instance.media_player_new()
@@ -231,8 +231,8 @@ class MediaViewerApp:
             self._vlc_player.set_nsobject(wid)
         else:
             self._vlc_player.set_xwindow(wid)
-        em = self._vlc_player.event_manager()
-        em.event_attach(vlc.EventType.MediaPlayerEndReached, self._on_vlc_end)
+        event_manager = self._vlc_player.event_manager()
+        event_manager.event_attach(vlc.EventType.MediaPlayerEndReached, self._on_vlc_end)
         self._vlc_player.play()
 
     def _start_cv2_video(self, path: Path) -> None:
@@ -244,7 +244,7 @@ class MediaViewerApp:
         self.video_capture = capture
         self.advance_video_frame()
 
-    def _on_vlc_end(self, event) -> None:
+    def _on_vlc_end(self, event: Any) -> None:
         self.root.after(0, self._handle_video_end)
 
     def _handle_video_end(self) -> None:
