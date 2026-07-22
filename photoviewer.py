@@ -32,6 +32,7 @@ VIDEO_SUFFIXES = {
 MEDIA_SUFFIXES = IMAGE_SUFFIXES | VIDEO_SUFFIXES
 MS_PER_SECOND = 1000.0
 MIN_TIMELINE_RANGE_SECONDS = 1.0
+TIMELINE_SEEK_DEBOUNCE_MS = 120
 
 ZoomMode = Literal["fit", "fill", "manual"]
 
@@ -168,6 +169,8 @@ class MediaViewerApp:
         )
         self.timeline_visible = False
         self.timeline_updating = False
+        self.timeline_seek_after_id: str | None = None
+        self.timeline_pending_seek_seconds = 0.0
 
         self.config = config
         self.playlist = MediaPlaylist(list_media_files(start_path), start_path)
@@ -257,6 +260,9 @@ class MediaViewerApp:
         self.advance_video_frame()
 
     def stop_video(self) -> None:
+        if self.timeline_seek_after_id is not None:
+            self.root.after_cancel(self.timeline_seek_after_id)
+            self.timeline_seek_after_id = None
         if self.video_after_id is not None:
             self.root.after_cancel(self.video_after_id)
             self.video_after_id = None
@@ -307,11 +313,25 @@ class MediaViewerApp:
     def on_timeline_change(self, value: str | float) -> None:
         if self.video_capture is None or self.timeline_updating or self.video_duration_seconds <= 0:
             return
-        position_seconds = clamp_video_seek_seconds(float(value), self.video_duration_seconds)
+        self.timeline_pending_seek_seconds = clamp_video_seek_seconds(float(value), self.video_duration_seconds)
+        if self.timeline_seek_after_id is not None:
+            self.root.after_cancel(self.timeline_seek_after_id)
+        self.timeline_seek_after_id = self.root.after(
+            TIMELINE_SEEK_DEBOUNCE_MS,
+            self.apply_pending_timeline_seek,
+        )
+
+    def apply_pending_timeline_seek(self) -> None:
+        self.timeline_seek_after_id = None
+        if self.video_capture is None or self.video_duration_seconds <= 0:
+            return
         if self.video_after_id is not None:
             self.root.after_cancel(self.video_after_id)
             self.video_after_id = None
-        self.video_capture.set(cv2.CAP_PROP_POS_MSEC, position_seconds * MS_PER_SECOND)
+        self.video_capture.set(
+            cv2.CAP_PROP_POS_MSEC,
+            self.timeline_pending_seek_seconds * MS_PER_SECOND,
+        )
         self.advance_video_frame()
 
     def render_current_frame(self) -> None:

@@ -8,6 +8,7 @@ import cv2
 from photoviewer import (
     MediaViewerApp,
     MediaPlaylist,
+    TIMELINE_SEEK_DEBOUNCE_MS,
     calculate_video_duration_seconds,
     clamp_slideshow_seconds,
     clamp_video_seek_seconds,
@@ -72,17 +73,40 @@ class PhotoViewerTests(unittest.TestCase):
         self.assertEqual(clamp_video_seek_seconds(11, 10), 10.0)
         self.assertEqual(clamp_video_seek_seconds(5, 0), 0.0)
 
-    def test_video_timeline_change_seeks_playback(self) -> None:
+    def test_video_timeline_change_schedules_debounced_seek(self) -> None:
         app = MediaViewerApp.__new__(MediaViewerApp)
         app.video_capture = mock.Mock()
         app.timeline_updating = False
         app.video_duration_seconds = 10.0
         app.video_after_id = "after-1"
+        app.timeline_seek_after_id = None
         app.root = mock.Mock()
+        app.root.after.return_value = "seek-1"
         app.advance_video_frame = mock.Mock()
 
         app.on_timeline_change("5")
 
+        self.assertEqual(app.timeline_pending_seek_seconds, 5.0)
+        app.root.after.assert_called_once_with(
+            TIMELINE_SEEK_DEBOUNCE_MS,
+            app.apply_pending_timeline_seek,
+        )
+        app.video_capture.set.assert_not_called()
+        app.advance_video_frame.assert_not_called()
+
+    def test_apply_pending_timeline_seek_updates_video_position(self) -> None:
+        app = MediaViewerApp.__new__(MediaViewerApp)
+        app.video_capture = mock.Mock()
+        app.video_duration_seconds = 10.0
+        app.timeline_pending_seek_seconds = 5.0
+        app.timeline_seek_after_id = "seek-1"
+        app.video_after_id = "after-1"
+        app.root = mock.Mock()
+        app.advance_video_frame = mock.Mock()
+
+        app.apply_pending_timeline_seek()
+
+        self.assertIsNone(app.timeline_seek_after_id)
         app.root.after_cancel.assert_called_once_with("after-1")
         app.video_capture.set.assert_called_once_with(cv2.CAP_PROP_POS_MSEC, 5000.0)
         app.advance_video_frame.assert_called_once()
