@@ -262,7 +262,7 @@ class MediaViewerApp:
     def stop_video(self) -> None:
         if self.timeline_seek_after_id is not None:
             self.root.after_cancel(self.timeline_seek_after_id)
-        self.clear_pending_timeline_seek()
+            self.timeline_seek_after_id = None
         if self.video_after_id is not None:
             self.root.after_cancel(self.video_after_id)
             self.video_after_id = None
@@ -321,12 +321,9 @@ class MediaViewerApp:
             self.apply_pending_timeline_seek,
         )
 
-    def clear_pending_timeline_seek(self) -> None:
-        self.timeline_seek_after_id = None
-
     def apply_pending_timeline_seek(self) -> None:
+        self.timeline_seek_after_id = None
         if self.video_capture is None or self.video_duration_seconds <= 0:
-            self.clear_pending_timeline_seek()
             return
         if self.video_after_id is not None:
             self.root.after_cancel(self.video_after_id)
@@ -336,7 +333,6 @@ class MediaViewerApp:
             self.timeline_pending_seek_seconds * MS_PER_SECOND,
         )
         self.advance_video_frame()
-        self.clear_pending_timeline_seek()
 
     def render_current_frame(self) -> None:
         if self.current_image is None:
