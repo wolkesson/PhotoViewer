@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Iterable, Literal
 
 import cv2
+import numpy as np
 from PIL import Image, ImageOps
 
 IMAGE_SUFFIXES = {
@@ -37,6 +38,52 @@ TIMELINE_SEEK_DEBOUNCE_MS = 120
 ZoomMode = Literal["fit", "fill", "manual"]
 
 PAN_STEP = 50  # pixels per key-press pan
+
+
+def find_resource(relative_path: str) -> Path:
+    """Resolve a resource path for both development and frozen PyInstaller binaries."""
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
+    return base / relative_path
+
+
+class Upscaler:
+    """Offline AI super-resolution using OpenCV's dnn_superres with ESPCN models."""
+
+    MODEL_NAME = "espcn"
+    SUPPORTED_SCALES = (2, 4)
+
+    def __init__(self, models_dir: Path) -> None:
+        self._models_dir = models_dir
+        self._loaded: dict[int, object] = {}
+
+    def _model_path(self, scale: int) -> Path:
+        return self._models_dir / f"ESPCN_x{scale}.pb"
+
+    def available(self, scale: int) -> bool:
+        """Return True only if the model file for *scale* exists on disk."""
+        return scale in self.SUPPORTED_SCALES and self._model_path(scale).exists()
+
+    def _load(self, scale: int) -> object:
+        if scale not in self._loaded:
+            sr = cv2.dnn_superres.DnnSuperResImpl_create()
+            sr.readModel(str(self._model_path(scale)))
+            sr.setModel(self.MODEL_NAME, scale)
+            self._loaded[scale] = sr
+        return self._loaded[scale]
+
+    def upscale(self, image: Image.Image, scale: int) -> Image.Image:
+        """Return *image* upscaled by *scale* using ESPCN.
+
+        Falls back silently to the original image on any error so that a
+        missing or incompatible model never crashes the viewer.
+        """
+        try:
+            sr = self._load(scale)
+            bgr = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+            result = sr.upsample(bgr)
+            return Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
+        except Exception:
+            return image
 
 
 @dataclass(frozen=True)
@@ -203,6 +250,9 @@ class MediaViewerApp:
         self.video_frame_delay_ms = 40
         self.video_duration_seconds = 0.0
         self._drag_start: tuple[float, float] | None = None
+        self.upscaler = Upscaler(find_resource("models"))
+        self.ai_upscale_enabled: bool = True
+        self._upscale_cache: tuple[int, int, tuple[int, int, int, int], Image.Image] | None = None
 
         self.root.bind("<Left>", lambda event: self.show_relative(-1))
         self.root.bind("<Right>", lambda event: self.show_relative(1))
@@ -220,6 +270,8 @@ class MediaViewerApp:
         self.root.bind("<Button-5>", lambda event: self.adjust_zoom(1 / 1.1, self.cursor_canvas_position(event)))
         self.canvas.bind("<ButtonPress-1>", self.on_drag_start)
         self.canvas.bind("<B1-Motion>", self.on_drag_move)
+        self.root.bind("<a>", self.toggle_ai_upscale)
+        self.root.bind("<A>", self.toggle_ai_upscale)
         self.root.bind("<F11>", self.toggle_fullscreen)
         self.root.bind("<Escape>", self.exit_fullscreen)
         self.root.bind("<Configure>", self.on_resize)
@@ -258,6 +310,7 @@ class MediaViewerApp:
         self.zoom_mode = "fit"
         self.manual_scale = 1.0
         self.image_center = None
+        self._upscale_cache = None
 
         if path.suffix.lower() in IMAGE_SUFFIXES:
             self.hide_timeline()
@@ -272,9 +325,10 @@ class MediaViewerApp:
 
     def update_status(self) -> None:
         mode = "slideshow on" if self.slideshow_enabled else "slideshow off"
+        ai_mode = "AI upscale: on" if self.ai_upscale_enabled else "AI upscale: off"
         self.status_var.set(
             f"{self.current_path().name}  |  {self.playlist.index + 1}/{len(self.playlist.files)}"
-            f"  |  {mode} ({self.config.slideshow_seconds:g}s)"
+            f"  |  {mode} ({self.config.slideshow_seconds:g}s)  |  {ai_mode}"
         )
 
     def start_video(self, path: Path) -> None:
@@ -368,18 +422,65 @@ class MediaViewerApp:
         if self.current_image is None:
             return
         viewport_size = self.current_viewport_size()
+        vp_w, vp_h = viewport_size
         scale = resolve_zoom_scale(
             self.zoom_mode,
             self.manual_scale,
             self.current_image.size,
             viewport_size,
         )
-        width = max(1, int(round(self.current_image.width * scale)))
-        height = max(1, int(round(self.current_image.height * scale)))
+        img_w, img_h = self.current_image.size
+        center_x, center_y = self.image_center or self.viewport_center(viewport_size)
+
+        # Apply AI upscaling when zoomed past the original pixel resolution on
+        # static images (not video frames, which change too fast for inference).
+        if scale > 1.0 and self.ai_upscale_enabled and self.video_capture is None:
+            sr_scale = 4 if scale >= 3.0 else 2
+            if self.upscaler.available(sr_scale):
+                # Determine the visible portion of the source image in canvas coords.
+                img_canvas_left = center_x - img_w * scale / 2
+                img_canvas_top = center_y - img_h * scale / 2
+                canvas_left = max(0.0, img_canvas_left)
+                canvas_right = min(float(vp_w), img_canvas_left + img_w * scale)
+                canvas_top = max(0.0, img_canvas_top)
+                canvas_bottom = min(float(vp_h), img_canvas_top + img_h * scale)
+
+                if canvas_right > canvas_left and canvas_bottom > canvas_top:
+                    # Map visible canvas region back to source image coordinates.
+                    src_left = max(0, int((canvas_left - center_x) / scale + img_w / 2))
+                    src_top = max(0, int((canvas_top - center_y) / scale + img_h / 2))
+                    src_right = min(img_w, int(math.ceil((canvas_right - center_x) / scale + img_w / 2)))
+                    src_bottom = min(img_h, int(math.ceil((canvas_bottom - center_y) / scale + img_h / 2)))
+                    crop_box = (src_left, src_top, src_right, src_bottom)
+
+                    # Use cached upscaled crop when view has not changed.
+                    cache_key = (id(self.current_image), sr_scale, crop_box)
+                    if self._upscale_cache is not None and self._upscale_cache[:3] == cache_key:
+                        up_crop = self._upscale_cache[3]
+                    else:
+                        src_crop = self.current_image.crop(crop_box)
+                        up_crop = self.upscaler.upscale(src_crop, sr_scale)
+                        self._upscale_cache = (id(self.current_image), sr_scale, crop_box, up_crop)
+
+                    disp_w = max(1, int(round(canvas_right - canvas_left)))
+                    disp_h = max(1, int(round(canvas_bottom - canvas_top)))
+                    display = up_crop.resize((disp_w, disp_h), Image.Resampling.LANCZOS)
+                    self.current_photo = self.ImageTk.PhotoImage(display)
+                    self.canvas.delete("all")
+                    self.canvas.create_image(
+                        (canvas_left + canvas_right) / 2,
+                        (canvas_top + canvas_bottom) / 2,
+                        anchor=self.tk.CENTER,
+                        image=self.current_photo,
+                    )
+                    return
+
+        # Fallback: standard LANCZOS resize.
+        width = max(1, int(round(img_w * scale)))
+        height = max(1, int(round(img_h * scale)))
         resized = self.current_image.resize((width, height), Image.Resampling.LANCZOS)
         self.current_photo = self.ImageTk.PhotoImage(resized)
         self.canvas.delete("all")
-        center_x, center_y = self.image_center or self.viewport_center(viewport_size)
         self.canvas.create_image(
             center_x,
             center_y,
@@ -493,6 +594,12 @@ class MediaViewerApp:
             self.schedule_slideshow_if_needed()
         else:
             self.cancel_slideshow()
+        self.update_status()
+
+    def toggle_ai_upscale(self, _event=None) -> None:
+        self.ai_upscale_enabled = not self.ai_upscale_enabled
+        self._upscale_cache = None
+        self.render_current_frame()
         self.update_status()
 
     def schedule_slideshow_if_needed(self) -> None:

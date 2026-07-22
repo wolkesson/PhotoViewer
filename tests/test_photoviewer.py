@@ -4,14 +4,17 @@ from unittest import mock
 from pathlib import Path
 
 import cv2
+from PIL import Image
 
 from photoviewer import (
     MediaViewerApp,
     MediaPlaylist,
     TIMELINE_SEEK_DEBOUNCE_MS,
+    Upscaler,
     calculate_video_duration_seconds,
     clamp_slideshow_seconds,
     clamp_video_seek_seconds,
+    find_resource,
     list_media_files,
     resolve_zoom_scale,
     scale_to_fill,
@@ -152,6 +155,142 @@ class PhotoViewerTests(unittest.TestCase):
             zoom_towards_point((50.0, 50.0), (100.0, 50.0), 0.5),
             (75.0, 50.0),
         )
+
+
+class FindResourceTests(unittest.TestCase):
+    def test_find_resource_returns_path_relative_to_script(self) -> None:
+        import photoviewer
+        result = find_resource("models")
+        expected = Path(photoviewer.__file__).parent / "models"
+        self.assertEqual(result, expected)
+
+    def test_find_resource_appends_relative_path(self) -> None:
+        result = find_resource("models/FSRCNN_x2.pb")
+        self.assertTrue(str(result).endswith("models/FSRCNN_x2.pb"))
+
+
+class UpscalerTests(unittest.TestCase):
+    def test_available_returns_false_when_model_file_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            upscaler = Upscaler(Path(tmp))
+            self.assertFalse(upscaler.available(2))
+            self.assertFalse(upscaler.available(4))
+
+    def test_available_returns_true_when_model_file_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "ESPCN_x2.pb").write_bytes(b"dummy")
+            upscaler = Upscaler(Path(tmp))
+            self.assertTrue(upscaler.available(2))
+
+    def test_available_returns_false_for_unsupported_scale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "ESPCN_x3.pb").write_bytes(b"dummy")
+            upscaler = Upscaler(Path(tmp))
+            self.assertFalse(upscaler.available(3))
+
+    def test_upscale_falls_back_to_original_when_model_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            upscaler = Upscaler(Path(tmp))
+            original = Image.new("RGB", (40, 30), color=(128, 64, 32))
+            result = upscaler.upscale(original, 2)
+            # Fallback returns the same image object unchanged
+            self.assertIs(result, original)
+            self.assertEqual(result.size, (40, 30))
+
+    def test_upscale_falls_back_gracefully_on_invalid_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            # Write a bogus .pb file to trigger a load error
+            (Path(tmp) / "ESPCN_x2.pb").write_bytes(b"not a real model")
+            upscaler = Upscaler(Path(tmp))
+            original = Image.new("RGB", (40, 30))
+            result = upscaler.upscale(original, 2)
+            self.assertIs(result, original)
+
+
+class RenderCurrentFrameTests(unittest.TestCase):
+    def _make_app(self) -> MediaViewerApp:
+        """Build a MediaViewerApp shell with all rendering dependencies mocked."""
+        app = MediaViewerApp.__new__(MediaViewerApp)
+        app.zoom_mode = "fit"
+        app.manual_scale = 1.0
+        app.image_center = None
+        app.video_capture = None
+        app.ai_upscale_enabled = True
+        app._upscale_cache = None
+        app.upscaler = mock.Mock(spec=Upscaler)
+        app.upscaler.available.return_value = False
+        app.root = mock.Mock()
+        app.root.update_idletasks = mock.Mock()
+        app.canvas = mock.Mock()
+        app.canvas.winfo_width.return_value = 300
+        app.canvas.winfo_height.return_value = 300
+        app.ImageTk = mock.Mock()
+        app.tk = mock.Mock()
+        app.tk.CENTER = "center"
+        return app
+
+    def test_no_upscaling_when_scale_at_or_below_fit(self) -> None:
+        app = self._make_app()
+        # 300×300 image in a 300×300 viewport → fit scale = 1.0 (not > 1.0)
+        app.current_image = Image.new("RGB", (300, 300))
+        app.render_current_frame()
+        app.upscaler.upscale.assert_not_called()
+
+    def test_no_upscaling_when_ai_upscale_disabled(self) -> None:
+        app = self._make_app()
+        app.ai_upscale_enabled = False
+        # Zoom in so scale > 1.0
+        app.zoom_mode = "manual"
+        app.manual_scale = 2.0
+        app.current_image = Image.new("RGB", (100, 100))
+        app.render_current_frame()
+        app.upscaler.upscale.assert_not_called()
+
+    def test_no_upscaling_for_video_frames(self) -> None:
+        app = self._make_app()
+        app.video_capture = mock.Mock()  # simulates an active video
+        app.zoom_mode = "manual"
+        app.manual_scale = 2.0
+        app.current_image = Image.new("RGB", (100, 100))
+        app.render_current_frame()
+        app.upscaler.upscale.assert_not_called()
+
+    def test_upscaling_called_when_zoomed_past_native_resolution(self) -> None:
+        app = self._make_app()
+        app.zoom_mode = "manual"
+        app.manual_scale = 2.0
+        # 300×300 image in 300×300 viewport → fit_scale=1.0, so manual_scale=2.0 applies
+        app.current_image = Image.new("RGB", (300, 300))
+        # Model available; upscale returns a 2× image
+        app.upscaler.available.return_value = True
+        app.upscaler.upscale.return_value = Image.new("RGB", (300, 300))
+        app.render_current_frame()
+        app.upscaler.available.assert_called_with(2)
+        app.upscaler.upscale.assert_called_once()
+
+    def test_upscale_uses_x4_model_at_high_zoom(self) -> None:
+        app = self._make_app()
+        app.zoom_mode = "manual"
+        app.manual_scale = 3.0
+        # 300×300 image in 300×300 viewport → fit_scale=1.0, so manual_scale=3.0 applies
+        app.current_image = Image.new("RGB", (300, 300))
+        app.upscaler.available.return_value = True
+        app.upscaler.upscale.return_value = Image.new("RGB", (1200, 1200))
+        app.render_current_frame()
+        app.upscaler.available.assert_called_with(4)
+
+    def test_upscale_cache_avoids_repeated_inference(self) -> None:
+        app = self._make_app()
+        app.zoom_mode = "manual"
+        app.manual_scale = 2.0
+        # 300×300 image in 300×300 viewport → fit_scale=1.0, so manual_scale=2.0 applies
+        app.current_image = Image.new("RGB", (300, 300))
+        app.upscaler.available.return_value = True
+        app.upscaler.upscale.return_value = Image.new("RGB", (300, 300))
+        app.render_current_frame()
+        app.render_current_frame()
+        # Second render must reuse the cache — upscale called exactly once
+        self.assertEqual(app.upscaler.upscale.call_count, 1)
 
 
 if __name__ == "__main__":
