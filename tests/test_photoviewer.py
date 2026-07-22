@@ -117,6 +117,7 @@ class PhotoViewerTests(unittest.TestCase):
         app.timeline_updating = False
         app.video_duration_seconds = 10.0
         app.timeline_seek_after_id = "seek-old"
+        app.video_after_id = None
         app.root = mock.Mock()
         app.root.after.return_value = "seek-new"
 

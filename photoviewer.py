@@ -262,7 +262,7 @@ class MediaViewerApp:
     def stop_video(self) -> None:
         if self.timeline_seek_after_id is not None:
             self.root.after_cancel(self.timeline_seek_after_id)
-            self.timeline_seek_after_id = None
+        self.clear_pending_timeline_seek()
         if self.video_after_id is not None:
             self.root.after_cancel(self.video_after_id)
             self.video_after_id = None
@@ -316,26 +316,28 @@ class MediaViewerApp:
         self.timeline_pending_seek_seconds = clamp_video_seek_seconds(float(value), self.video_duration_seconds)
         if self.timeline_seek_after_id is not None:
             self.root.after_cancel(self.timeline_seek_after_id)
-            self.timeline_seek_after_id = None
+            self.clear_pending_timeline_seek()
         self.timeline_seek_after_id = self.root.after(
             TIMELINE_SEEK_DEBOUNCE_MS,
             self.apply_pending_timeline_seek,
         )
 
+    def clear_pending_timeline_seek(self) -> None:
+        self.timeline_seek_after_id = None
+
     def apply_pending_timeline_seek(self) -> None:
-        try:
-            if self.video_capture is None or self.video_duration_seconds <= 0:
-                return
-            if self.video_after_id is not None:
-                self.root.after_cancel(self.video_after_id)
-                self.video_after_id = None
-            self.video_capture.set(
-                cv2.CAP_PROP_POS_MSEC,
-                self.timeline_pending_seek_seconds * MS_PER_SECOND,
-            )
-            self.advance_video_frame()
-        finally:
-            self.timeline_seek_after_id = None
+        if self.video_capture is None or self.video_duration_seconds <= 0:
+            self.clear_pending_timeline_seek()
+            return
+        if self.video_after_id is not None:
+            self.root.after_cancel(self.video_after_id)
+            self.video_after_id = None
+        self.video_capture.set(
+            cv2.CAP_PROP_POS_MSEC,
+            self.timeline_pending_seek_seconds * MS_PER_SECOND,
+        )
+        self.advance_video_frame()
+        self.clear_pending_timeline_seek()
 
     def render_current_frame(self) -> None:
         if self.current_image is None:
