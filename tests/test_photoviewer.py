@@ -165,8 +165,8 @@ class FindResourceTests(unittest.TestCase):
         self.assertEqual(result, expected)
 
     def test_find_resource_appends_relative_path(self) -> None:
-        result = find_resource("models/FSRCNN_x2.pb")
-        self.assertTrue(str(result).endswith("models/FSRCNN_x2.pb"))
+        result = find_resource("models/ESPCN_x2.pb")
+        self.assertTrue(str(result).endswith("models/ESPCN_x2.pb"))
 
 
 class UpscalerTests(unittest.TestCase):
