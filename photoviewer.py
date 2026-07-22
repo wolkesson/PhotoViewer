@@ -33,6 +33,8 @@ MEDIA_SUFFIXES = IMAGE_SUFFIXES | VIDEO_SUFFIXES
 
 ZoomMode = Literal["fit", "fill", "manual"]
 
+PAN_STEP = 50  # pixels per key-press pan
+
 
 @dataclass(frozen=True)
 class ViewerConfig:
@@ -158,6 +160,7 @@ class MediaViewerApp:
         self.slideshow_after_id: str | None = None
         self.slideshow_enabled = False
         self.video_frame_delay_ms = 40
+        self._drag_start: tuple[float, float] | None = None
 
         self.root.bind("<Left>", lambda event: self.show_relative(-1))
         self.root.bind("<Right>", lambda event: self.show_relative(1))
@@ -166,9 +169,15 @@ class MediaViewerApp:
         self.root.bind("<Down>", self.zoom_in)
         self.root.bind("<Control-Up>", self.zoom_to_fit)
         self.root.bind("<Control-Down>", self.zoom_to_fill)
+        self.root.bind("<Alt-Left>", lambda event: self.pan(-PAN_STEP, 0))
+        self.root.bind("<Alt-Right>", lambda event: self.pan(PAN_STEP, 0))
+        self.root.bind("<Alt-Up>", lambda event: self.pan(0, -PAN_STEP))
+        self.root.bind("<Alt-Down>", lambda event: self.pan(0, PAN_STEP))
         self.root.bind("<MouseWheel>", self.on_mouse_wheel)
         self.root.bind("<Button-4>", lambda event: self.adjust_zoom(1.1, self.cursor_canvas_position(event)))
         self.root.bind("<Button-5>", lambda event: self.adjust_zoom(1 / 1.1, self.cursor_canvas_position(event)))
+        self.canvas.bind("<ButtonPress-1>", self.on_drag_start)
+        self.canvas.bind("<B1-Motion>", self.on_drag_move)
         self.root.bind("<F11>", self.toggle_fullscreen)
         self.root.bind("<Escape>", self.exit_fullscreen)
         self.root.bind("<Configure>", self.on_resize)
@@ -322,6 +331,33 @@ class MediaViewerApp:
         self.zoom_mode = "fill"
         self.image_center = None
         self.render_current_frame()
+
+    def pan(self, dx: float, dy: float) -> None:
+        if self.current_image is None:
+            return
+        viewport_size = self.current_viewport_size()
+        current_scale = resolve_zoom_scale(
+            self.zoom_mode,
+            self.manual_scale,
+            self.current_image.size,
+            viewport_size,
+        )
+        if current_scale <= scale_to_fit(self.current_image.size, viewport_size):
+            return
+        current_center = self.image_center or self.viewport_center(viewport_size)
+        self.image_center = (current_center[0] + dx, current_center[1] + dy)
+        self.render_current_frame()
+
+    def on_drag_start(self, event) -> None:
+        self._drag_start = (event.x, event.y)
+
+    def on_drag_move(self, event) -> None:
+        if self._drag_start is None:
+            return
+        dx = event.x - self._drag_start[0]
+        dy = event.y - self._drag_start[1]
+        self._drag_start = (event.x, event.y)
+        self.pan(dx, dy)
 
     def on_mouse_wheel(self, event) -> None:
         if event.delta == 0:
