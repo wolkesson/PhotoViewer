@@ -87,6 +87,21 @@ def resolve_zoom_scale(
     return max(fit_scale, manual_scale)
 
 
+def zoom_towards_point(
+    current_center: tuple[float, float],
+    focus_point: tuple[float, float],
+    scale_ratio: float,
+) -> tuple[float, float]:
+    if scale_ratio <= 0:
+        return current_center
+    center_x, center_y = current_center
+    focus_x, focus_y = focus_point
+    return (
+        (scale_ratio * center_x) + ((1 - scale_ratio) * focus_x),
+        (scale_ratio * center_y) + ((1 - scale_ratio) * focus_y),
+    )
+
+
 class MediaPlaylist:
     def __init__(self, files: Iterable[Path], current: Path) -> None:
         self.files = list(files)
@@ -137,6 +152,7 @@ class MediaViewerApp:
         self.manual_scale = 1.0
         self.current_image: Image.Image | None = None
         self.current_photo = None
+        self.image_center: tuple[float, float] | None = None
         self.video_capture: cv2.VideoCapture | None = None
         self.video_after_id: str | None = None
         self.slideshow_after_id: str | None = None
@@ -151,8 +167,8 @@ class MediaViewerApp:
         self.root.bind("<Control-Up>", self.zoom_to_fit)
         self.root.bind("<Control-Down>", self.zoom_to_fill)
         self.root.bind("<MouseWheel>", self.on_mouse_wheel)
-        self.root.bind("<Button-4>", lambda event: self.adjust_zoom(1.1))
-        self.root.bind("<Button-5>", lambda event: self.adjust_zoom(1 / 1.1))
+        self.root.bind("<Button-4>", lambda event: self.adjust_zoom(1.1, self.cursor_canvas_position(event)))
+        self.root.bind("<Button-5>", lambda event: self.adjust_zoom(1 / 1.1, self.cursor_canvas_position(event)))
         self.root.bind("<F11>", self.toggle_fullscreen)
         self.root.bind("<Escape>", self.exit_fullscreen)
         self.root.bind("<Configure>", self.on_resize)
@@ -178,6 +194,10 @@ class MediaViewerApp:
         self.root.update_idletasks()
         return max(self.canvas.winfo_width(), 1), max(self.canvas.winfo_height(), 1)
 
+    @staticmethod
+    def viewport_center(viewport_size: tuple[int, int]) -> tuple[float, float]:
+        return viewport_size[0] / 2, viewport_size[1] / 2
+
     def show_relative(self, offset: int) -> None:
         self.show_path(self.playlist.step(offset))
 
@@ -186,6 +206,7 @@ class MediaViewerApp:
         self.cancel_slideshow()
         self.zoom_mode = "fit"
         self.manual_scale = 1.0
+        self.image_center = None
 
         if path.suffix.lower() in IMAGE_SUFFIXES:
             with Image.open(path) as image:
@@ -250,9 +271,10 @@ class MediaViewerApp:
         resized = self.current_image.resize((width, height), Image.Resampling.LANCZOS)
         self.current_photo = self.ImageTk.PhotoImage(resized)
         self.canvas.delete("all")
+        center_x, center_y = self.image_center or self.viewport_center(viewport_size)
         self.canvas.create_image(
-            viewport_size[0] // 2,
-            viewport_size[1] // 2,
+            center_x,
+            center_y,
             anchor=self.tk.CENTER,
             image=self.current_photo,
         )
@@ -262,7 +284,7 @@ class MediaViewerApp:
         self.manual_scale = scale
         self.render_current_frame()
 
-    def adjust_zoom(self, factor: float) -> None:
+    def adjust_zoom(self, factor: float, focus_point: tuple[float, float] | None = None) -> None:
         if self.current_image is None:
             return
         viewport_size = self.current_viewport_size()
@@ -273,7 +295,17 @@ class MediaViewerApp:
             viewport_size,
         )
         fit_scale = scale_to_fit(self.current_image.size, viewport_size)
-        self.set_manual_scale(max(fit_scale, current_scale * factor))
+        new_scale = current_scale * factor
+        if new_scale <= fit_scale:
+            self.zoom_mode = "fit"
+            self.image_center = None
+            self.render_current_frame()
+            return
+        anchor = focus_point or self.viewport_center(viewport_size)
+        current_center = self.image_center or self.viewport_center(viewport_size)
+        if current_scale > 0:
+            self.image_center = zoom_towards_point(current_center, anchor, new_scale / current_scale)
+        self.set_manual_scale(new_scale)
 
     def zoom_in(self, _event=None) -> None:
         self.adjust_zoom(1.1)
@@ -283,14 +315,42 @@ class MediaViewerApp:
 
     def zoom_to_fit(self, _event=None) -> None:
         self.zoom_mode = "fit"
+        self.image_center = None
         self.render_current_frame()
 
     def zoom_to_fill(self, _event=None) -> None:
         self.zoom_mode = "fill"
+        self.image_center = None
         self.render_current_frame()
 
     def on_mouse_wheel(self, event) -> None:
-        self.adjust_zoom(1.1 if event.delta > 0 else 1 / 1.1)
+        if event.delta == 0:
+            return
+        self.adjust_zoom(
+            1.1 if event.delta > 0 else 1 / 1.1,
+            self.cursor_canvas_position(event),
+        )
+
+    def cursor_canvas_position(self, event) -> tuple[float, float]:
+        viewport_width, viewport_height = self.current_viewport_size()
+        pointer_x = self.root.winfo_pointerx()
+        pointer_y = self.root.winfo_pointery()
+        if not (pointer_x == -1 and pointer_y == -1):
+            cursor_x = pointer_x - self.canvas.winfo_rootx()
+            cursor_y = pointer_y - self.canvas.winfo_rooty()
+        else:
+            x_root = getattr(event, "x_root", None)
+            y_root = getattr(event, "y_root", None)
+            if x_root is not None and y_root is not None:
+                cursor_x = x_root - self.canvas.winfo_rootx()
+                cursor_y = y_root - self.canvas.winfo_rooty()
+            else:
+                cursor_x = getattr(event, "x", viewport_width / 2)
+                cursor_y = getattr(event, "y", viewport_height / 2)
+        return (
+            min(max(cursor_x, 0), viewport_width),
+            min(max(cursor_y, 0), viewport_height),
+        )
 
     def toggle_slideshow(self, _event=None) -> None:
         self.slideshow_enabled = not self.slideshow_enabled

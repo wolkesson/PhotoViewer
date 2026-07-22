@@ -9,6 +9,7 @@ from photoviewer import (
     resolve_zoom_scale,
     scale_to_fill,
     scale_to_fit,
+    zoom_towards_point,
 )
 
 
@@ -56,6 +57,16 @@ class PhotoViewerTests(unittest.TestCase):
     def test_slideshow_seconds_has_reasonable_minimum(self) -> None:
         self.assertEqual(clamp_slideshow_seconds(0.1), 0.5)
         self.assertEqual(clamp_slideshow_seconds(4), 4.0)
+
+    def test_zoom_towards_point_keeps_cursor_area_in_focus(self) -> None:
+        self.assertEqual(
+            zoom_towards_point((50.0, 50.0), (100.0, 50.0), 2.0),
+            (0.0, 50.0),
+        )
+        self.assertEqual(
+            zoom_towards_point((50.0, 50.0), (100.0, 50.0), 0.5),
+            (75.0, 50.0),
+        )
 
 
 if __name__ == "__main__":
