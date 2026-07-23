@@ -9,7 +9,9 @@ from PIL import Image
 from photoviewer import (
     MediaViewerApp,
     MediaPlaylist,
+    OnnxUpscaler,
     TIMELINE_SEEK_DEBOUNCE_MS,
+    UPSCALE_NETWORKS,
     Upscaler,
     calculate_video_duration_seconds,
     clamp_slideshow_seconds,
@@ -215,6 +217,115 @@ class UpscalerTests(unittest.TestCase):
             self.assertIs(result, original)
 
 
+class OnnxUpscalerTests(unittest.TestCase):
+    def test_available_returns_false_when_model_file_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            upscaler = OnnxUpscaler(Path(tmp))
+            self.assertFalse(upscaler.available("swinir"))
+            self.assertFalse(upscaler.available("esrgan"))
+
+    def test_available_returns_false_for_unknown_network(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            upscaler = OnnxUpscaler(Path(tmp))
+            self.assertFalse(upscaler.available("unknown"))
+
+    def test_available_returns_true_when_model_file_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "swinir_x4.onnx").write_bytes(b"dummy")
+            upscaler = OnnxUpscaler(Path(tmp))
+            self.assertTrue(upscaler.available("swinir"))
+
+    def test_available_returns_false_when_onnxruntime_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "swinir_x4.onnx").write_bytes(b"dummy")
+            upscaler = OnnxUpscaler(Path(tmp))
+            # Simulate onnxruntime not installed.
+            with mock.patch.object(OnnxUpscaler, "_ort_available", return_value=False):
+                self.assertFalse(upscaler.available("swinir"))
+
+    def test_scale_factor_returns_correct_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            upscaler = OnnxUpscaler(Path(tmp))
+            self.assertEqual(upscaler.scale_factor("swinir"), 4)
+            self.assertEqual(upscaler.scale_factor("esrgan"), 4)
+
+    def test_upscale_falls_back_when_model_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            upscaler = OnnxUpscaler(Path(tmp))
+            original = Image.new("RGB", (40, 30), color=(10, 20, 30))
+            result = upscaler.upscale(original, "swinir")
+            self.assertIs(result, original)
+
+    def test_upscale_falls_back_on_inference_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "swinir_x4.onnx").write_bytes(b"not a real onnx model")
+            upscaler = OnnxUpscaler(Path(tmp))
+            original = Image.new("RGB", (8, 8))
+            result = upscaler.upscale(original, "swinir")
+            self.assertIs(result, original)
+
+    def test_networks_constant_contains_expected_keys(self) -> None:
+        self.assertIn("swinir", OnnxUpscaler.NETWORKS)
+        self.assertIn("esrgan", OnnxUpscaler.NETWORKS)
+
+
+class CycleUpscaleNetworkTests(unittest.TestCase):
+    def _make_app(self) -> MediaViewerApp:
+        app = MediaViewerApp.__new__(MediaViewerApp)
+        app._upscale_cache = None
+        app.upscale_network = UPSCALE_NETWORKS[0]
+        app.upscaler = mock.Mock(spec=Upscaler)
+        app.upscaler.available.return_value = False
+        app.onnx_upscaler = mock.Mock(spec=OnnxUpscaler)
+        app.onnx_upscaler.available.return_value = False
+        app.zoom_mode = "fit"
+        app.manual_scale = 1.0
+        app.image_center = None
+        app.video_capture = None
+        app._vlc_player = None
+        app.current_image = Image.new("RGB", (100, 100))
+        app.root = mock.Mock()
+        app.root.update_idletasks = mock.Mock()
+        app.canvas = mock.Mock()
+        app.canvas.winfo_width.return_value = 300
+        app.canvas.winfo_height.return_value = 300
+        app.ImageTk = mock.Mock()
+        app.tk = mock.Mock()
+        app.tk.CENTER = "center"
+        app.status_var = mock.Mock()
+        app.playlist = mock.Mock()
+        app.playlist.index = 0
+        app.playlist.files = [Path("a.jpg")]
+        app.slideshow_enabled = False
+        app.config = mock.Mock()
+        app.config.slideshow_seconds = 3.0
+        return app
+
+    def test_cycle_advances_through_all_networks(self) -> None:
+        app = self._make_app()
+        visited = [app.upscale_network]
+        for _ in range(len(UPSCALE_NETWORKS)):
+            app.cycle_upscale_network()
+            visited.append(app.upscale_network)
+        # After a full cycle we should be back to the start.
+        self.assertEqual(visited[0], visited[-1])
+        self.assertEqual(set(visited[:-1]), set(UPSCALE_NETWORKS))
+
+    def test_cycle_clears_upscale_cache(self) -> None:
+        app = self._make_app()
+        app._upscale_cache = ("dummy",)  # type: ignore[assignment]
+        app.cycle_upscale_network()
+        self.assertIsNone(app._upscale_cache)
+
+    def test_cycle_includes_off_option(self) -> None:
+        app = self._make_app()
+        networks_seen = set()
+        for _ in range(len(UPSCALE_NETWORKS)):
+            app.cycle_upscale_network()
+            networks_seen.add(app.upscale_network)
+        self.assertIn("off", networks_seen)
+
+
 class RenderCurrentFrameTests(unittest.TestCase):
     def _make_app(self) -> MediaViewerApp:
         """Build a MediaViewerApp shell with all rendering dependencies mocked."""
@@ -224,10 +335,12 @@ class RenderCurrentFrameTests(unittest.TestCase):
         app.image_center = None
         app.video_capture = None
         app._vlc_player = None
-        app.ai_upscale_enabled = True
+        app.upscale_network = "espcn"
         app._upscale_cache = None
         app.upscaler = mock.Mock(spec=Upscaler)
         app.upscaler.available.return_value = False
+        app.onnx_upscaler = mock.Mock(spec=OnnxUpscaler)
+        app.onnx_upscaler.available.return_value = False
         app.root = mock.Mock()
         app.root.update_idletasks = mock.Mock()
         app.canvas = mock.Mock()
@@ -247,13 +360,14 @@ class RenderCurrentFrameTests(unittest.TestCase):
 
     def test_no_upscaling_when_ai_upscale_disabled(self) -> None:
         app = self._make_app()
-        app.ai_upscale_enabled = False
+        app.upscale_network = "off"
         # Zoom in so scale > 1.0
         app.zoom_mode = "manual"
         app.manual_scale = 2.0
         app.current_image = Image.new("RGB", (100, 100))
         app.render_current_frame()
         app.upscaler.upscale.assert_not_called()
+        app.onnx_upscaler.upscale.assert_not_called()
 
     def test_no_upscaling_for_video_frames(self) -> None:
         app = self._make_app()
@@ -263,6 +377,7 @@ class RenderCurrentFrameTests(unittest.TestCase):
         app.current_image = Image.new("RGB", (100, 100))
         app.render_current_frame()
         app.upscaler.upscale.assert_not_called()
+        app.onnx_upscaler.upscale.assert_not_called()
 
     def test_upscaling_called_when_zoomed_past_native_resolution(self) -> None:
         app = self._make_app()
@@ -300,6 +415,47 @@ class RenderCurrentFrameTests(unittest.TestCase):
         app.render_current_frame()
         # Second render must reuse the cache — upscale called exactly once
         self.assertEqual(app.upscaler.upscale.call_count, 1)
+
+    def test_onnx_upscaling_called_when_swinir_network_selected(self) -> None:
+        app = self._make_app()
+        app.upscale_network = "swinir"
+        app.zoom_mode = "manual"
+        app.manual_scale = 2.0
+        app.current_image = Image.new("RGB", (300, 300))
+        app.onnx_upscaler.available.return_value = True
+        app.onnx_upscaler.scale_factor.return_value = 4
+        app.onnx_upscaler.upscale.return_value = Image.new("RGB", (1200, 1200))
+        app.render_current_frame()
+        app.onnx_upscaler.available.assert_called_with("swinir")
+        app.onnx_upscaler.upscale.assert_called_once()
+        app.upscaler.upscale.assert_not_called()
+
+    def test_onnx_upscaling_called_when_esrgan_network_selected(self) -> None:
+        app = self._make_app()
+        app.upscale_network = "esrgan"
+        app.zoom_mode = "manual"
+        app.manual_scale = 2.0
+        app.current_image = Image.new("RGB", (300, 300))
+        app.onnx_upscaler.available.return_value = True
+        app.onnx_upscaler.scale_factor.return_value = 4
+        app.onnx_upscaler.upscale.return_value = Image.new("RGB", (1200, 1200))
+        app.render_current_frame()
+        app.onnx_upscaler.available.assert_called_with("esrgan")
+        app.onnx_upscaler.upscale.assert_called_once()
+        app.upscaler.upscale.assert_not_called()
+
+    def test_onnx_cache_avoids_repeated_inference(self) -> None:
+        app = self._make_app()
+        app.upscale_network = "swinir"
+        app.zoom_mode = "manual"
+        app.manual_scale = 2.0
+        app.current_image = Image.new("RGB", (300, 300))
+        app.onnx_upscaler.available.return_value = True
+        app.onnx_upscaler.scale_factor.return_value = 4
+        app.onnx_upscaler.upscale.return_value = Image.new("RGB", (1200, 1200))
+        app.render_current_frame()
+        app.render_current_frame()
+        self.assertEqual(app.onnx_upscaler.upscale.call_count, 1)
 
 
 if __name__ == "__main__":
