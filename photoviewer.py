@@ -5,7 +5,7 @@ import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Literal
+from typing import Any, Iterable, Literal
 
 import cv2
 import numpy as np
@@ -257,6 +257,8 @@ class MediaViewerApp:
         self.upscaler = Upscaler(find_resource("models"))
         self.ai_upscale_enabled: bool = True
         self._upscale_cache: tuple[int, int, tuple[int, int, int, int], Image.Image] | None = None
+        self._vlc_instance = None
+        self._vlc_player = None
 
         self.root.bind("<Left>", lambda event: self.show_relative(-1))
         self.root.bind("<Right>", lambda event: self.show_relative(1))
@@ -341,6 +343,35 @@ class MediaViewerApp:
         )
 
     def start_video(self, path: Path) -> None:
+        try:
+            import vlc as _vlc
+        except ImportError:
+            _vlc = None
+
+        if _vlc is not None:
+            self._start_vlc_video(path, _vlc)
+        else:
+            self._start_cv2_video(path)
+
+    def _start_vlc_video(self, path: Path, vlc: Any) -> None:
+        self.current_image = None
+        self._vlc_instance = vlc.Instance()
+        self._vlc_player = self._vlc_instance.media_player_new()
+        media = self._vlc_instance.media_new(str(path))
+        self._vlc_player.set_media(media)
+        self.root.update_idletasks()
+        wid = self.canvas.winfo_id()
+        if sys.platform == "win32":
+            self._vlc_player.set_hwnd(wid)
+        elif sys.platform == "darwin":
+            self._vlc_player.set_nsobject(wid)
+        else:
+            self._vlc_player.set_xwindow(wid)
+        event_manager = self._vlc_player.event_manager()
+        event_manager.event_attach(vlc.EventType.MediaPlayerEndReached, self._on_vlc_end)
+        self._vlc_player.play()
+
+    def _start_cv2_video(self, path: Path) -> None:
         capture = cv2.VideoCapture(str(path))
         if not capture.isOpened():
             raise RuntimeError(f"Unable to open video: {path}")
@@ -351,6 +382,70 @@ class MediaViewerApp:
         self.video_capture = capture
         self.show_timeline()
         self.advance_video_frame()
+
+    def _on_vlc_end(self, event: Any) -> None:
+        self.root.after(0, self._handle_video_end)
+
+    def _handle_video_end(self) -> None:
+        self.stop_video()
+        if self.slideshow_enabled:
+            self.show_relative(1)
+
+    def _current_media_size(self) -> tuple[int, int] | None:
+        if self.current_image is not None:
+            return self.current_image.size
+        if self._vlc_player is not None:
+            size = self._vlc_player.video_get_size(0)
+            if size and size != (0, 0):
+                return size
+        return None
+
+    def _apply_vlc_zoom(self) -> None:
+        if self._vlc_player is None:
+            return
+        video_size = self._vlc_player.video_get_size(0)
+        if not video_size or video_size == (0, 0):
+            return
+        nw, nh = video_size
+        viewport_size = self.current_viewport_size()
+        vw, vh = viewport_size
+        s = resolve_zoom_scale(self.zoom_mode, self.manual_scale, (nw, nh), viewport_size)
+        if s <= 0:
+            return
+        cx, cy = self.image_center or self.viewport_center(viewport_size)
+        crop_w = vw / s
+        crop_h = vh / s
+        # Crop covers the full video or more — use VLC auto-fit (no explicit crop)
+        if crop_w >= nw and crop_h >= nh:
+            self._vlc_player.video_set_crop_geometry(None)
+            self._vlc_player.video_set_scale(0)
+            return
+        # Convert the viewport-center canvas position (cx, cy) to native video
+        # coordinates: at scale s, source pixel p maps to canvas position
+        # cx_image + (p - nw/2)*s, so the source pixel at viewport center is
+        # nw/2 + (vw/2 - cx)/s, and the crop top-left is that minus crop_w/2,
+        # which simplifies to nw/2 - cx/s.
+        crop_x = nw / 2 - cx / s
+        crop_y = nh / 2 - cy / s
+        # Clamp crop origin so the crop region stays within the native frame
+        if crop_w <= nw:
+            crop_x = max(0.0, min(crop_x, nw - crop_w))
+        else:
+            crop_x = 0.0
+        if crop_h <= nh:
+            crop_y = max(0.0, min(crop_y, nh - crop_h))
+        else:
+            crop_y = 0.0
+        crop_w = min(crop_w, nw)
+        crop_h = min(crop_h, nh)
+        # VLC crop geometry format: "<width>x<height>+<left>+<top>" in native
+        # video pixels.  VLC then auto-fits the cropped region to the window.
+        geometry = (
+            f"{int(round(crop_w))}x{int(round(crop_h))}"
+            f"+{int(round(crop_x))}+{int(round(crop_y))}"
+        )
+        self._vlc_player.video_set_crop_geometry(geometry)
+        self._vlc_player.video_set_scale(0)
 
     def stop_video(self) -> None:
         if self.timeline_seek_after_id is not None:
@@ -363,6 +458,13 @@ class MediaViewerApp:
             self.video_capture.release()
             self.video_capture = None
         self.video_duration_seconds = 0.0
+        if self._vlc_player is not None:
+            self._vlc_player.stop()
+            self._vlc_player.release()
+            self._vlc_player = None
+        if self._vlc_instance is not None:
+            self._vlc_instance.release()
+            self._vlc_instance = None
 
     def advance_video_frame(self) -> None:
         if self.video_capture is None:
@@ -428,6 +530,9 @@ class MediaViewerApp:
         self.advance_video_frame()
 
     def render_current_frame(self) -> None:
+        if self._vlc_player is not None:
+            self._apply_vlc_zoom()
+            return
         if self.current_image is None:
             return
         viewport_size = self.current_viewport_size()
@@ -487,7 +592,10 @@ class MediaViewerApp:
         # Fallback: standard LANCZOS resize.
         width = max(1, int(round(img_w * scale)))
         height = max(1, int(round(img_h * scale)))
-        resized = self.current_image.resize((width, height), Image.Resampling.LANCZOS)
+        resized = self.current_image.resize(
+            (width, height),
+            Image.Resampling.BILINEAR if self.video_capture is not None else Image.Resampling.LANCZOS,
+        )
         self.current_photo = self.ImageTk.PhotoImage(resized)
         self.canvas.delete("all")
         self.canvas.create_image(
@@ -503,16 +611,17 @@ class MediaViewerApp:
         self.render_current_frame()
 
     def adjust_zoom(self, factor: float, focus_point: tuple[float, float] | None = None) -> None:
-        if self.current_image is None:
+        media_size = self._current_media_size()
+        if media_size is None:
             return
         viewport_size = self.current_viewport_size()
         current_scale = resolve_zoom_scale(
             self.zoom_mode,
             self.manual_scale,
-            self.current_image.size,
+            media_size,
             viewport_size,
         )
-        fit_scale = scale_to_fit(self.current_image.size, viewport_size)
+        fit_scale = scale_to_fit(media_size, viewport_size)
         new_scale = current_scale * factor
         if new_scale <= fit_scale:
             self.zoom_mode = "fit"
@@ -542,16 +651,17 @@ class MediaViewerApp:
         self.render_current_frame()
 
     def pan(self, dx: float, dy: float) -> None:
-        if self.current_image is None:
+        media_size = self._current_media_size()
+        if media_size is None:
             return
         viewport_size = self.current_viewport_size()
         current_scale = resolve_zoom_scale(
             self.zoom_mode,
             self.manual_scale,
-            self.current_image.size,
+            media_size,
             viewport_size,
         )
-        if current_scale <= scale_to_fit(self.current_image.size, viewport_size):
+        if current_scale <= scale_to_fit(media_size, viewport_size):
             return
         current_center = self.image_center or self.viewport_center(viewport_size)
         self.image_center = (current_center[0] + dx, current_center[1] + dy)

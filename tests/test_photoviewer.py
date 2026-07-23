@@ -223,6 +223,7 @@ class RenderCurrentFrameTests(unittest.TestCase):
         app.manual_scale = 1.0
         app.image_center = None
         app.video_capture = None
+        app._vlc_player = None
         app.ai_upscale_enabled = True
         app._upscale_cache = None
         app.upscaler = mock.Mock(spec=Upscaler)
