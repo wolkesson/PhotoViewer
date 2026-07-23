@@ -39,6 +39,9 @@ ZoomMode = Literal["fit", "fill", "manual"]
 
 PAN_STEP = 50  # pixels per key-press pan
 
+# Ordered list of upscale networks cycled by the A key.  "off" disables upscaling.
+UPSCALE_NETWORKS = ["swinir", "esrgan", "espcn", "off"]
+
 
 def find_resource(relative_path: str) -> Path:
     """Resolve a resource path for both development and frozen PyInstaller binaries."""
@@ -86,6 +89,88 @@ class Upscaler:
             bgr = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
             result = sr.upsample(bgr)
             return Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
+        except Exception:
+            return image
+
+
+class OnnxUpscaler:
+    """ONNX Runtime super-resolution using SwinIR or Real-ESRGAN models.
+
+    Model files must be placed in the *models_dir* directory.  Inference is
+    skipped gracefully whenever onnxruntime is not installed or the model file
+    is absent, so the viewer never crashes due to a missing model.
+    """
+
+    NETWORKS: dict[str, tuple[str, int]] = {
+        "swinir": ("swinir_x4.onnx", 4),
+        "esrgan": ("realesrgan_x4.onnx", 4),
+    }
+
+    def __init__(self, models_dir: Path) -> None:
+        self._models_dir = models_dir
+        self._sessions: dict[str, Any] = {}
+
+    def _model_path(self, name: str) -> Path:
+        filename, _ = self.NETWORKS[name]
+        return self._models_dir / filename
+
+    @staticmethod
+    def _ort_available() -> bool:
+        try:
+            import onnxruntime  # noqa: F401
+            return True
+        except ImportError:
+            return False
+
+    def available(self, name: str) -> bool:
+        """Return True if onnxruntime is installed and the model file exists on disk."""
+        return (
+            self._ort_available()
+            and name in self.NETWORKS
+            and self._model_path(name).exists()
+        )
+
+    def _session(self, name: str) -> Any:
+        if name not in self._sessions:
+            import onnxruntime as ort
+            opts = ort.SessionOptions()
+            opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            self._sessions[name] = ort.InferenceSession(
+                str(self._model_path(name)),
+                sess_options=opts,
+                providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+            )
+        return self._sessions[name]
+
+    def scale_factor(self, name: str) -> int:
+        """Return the integer upscaling factor for the named network."""
+        return self.NETWORKS.get(name, ("", 4))[1]
+
+    def upscale(self, image: Image.Image, name: str) -> Image.Image:
+        """Return *image* upscaled with the named ONNX model.
+
+        The image is padded to a multiple of 8 pixels (required by
+        window-based attention models such as SwinIR) and the padding is
+        cropped away from the output.  Falls back silently to the original
+        image on any error.
+        """
+        try:
+            session = self._session(name)
+            scale = self.scale_factor(name)
+            img_np = np.array(image, dtype=np.float32) / 255.0  # HWC in [0, 1]
+            h, w = img_np.shape[:2]
+            pad_h = (8 - h % 8) % 8
+            pad_w = (8 - w % 8) % 8
+            if pad_h or pad_w:
+                img_np = np.pad(img_np, ((0, pad_h), (0, pad_w), (0, 0)), mode="reflect")
+            # HWC → NCHW
+            tensor = img_np.transpose(2, 0, 1)[np.newaxis].astype(np.float32)
+            input_name = session.get_inputs()[0].name
+            output = session.run(None, {input_name: tensor})[0]
+            # NCHW → HWC, crop padding, rescale to uint8
+            out_np = output[0].transpose(1, 2, 0)[: h * scale, : w * scale, :]
+            out_np = np.clip(out_np * 255.0, 0, 255).astype(np.uint8)
+            return Image.fromarray(out_np)
         except Exception:
             return image
 
@@ -255,8 +340,9 @@ class MediaViewerApp:
         self.video_duration_seconds = 0.0
         self._drag_start: tuple[float, float] | None = None
         self.upscaler = Upscaler(find_resource("models"))
-        self.ai_upscale_enabled: bool = True
-        self._upscale_cache: tuple[int, int, tuple[int, int, int, int], Image.Image] | None = None
+        self.onnx_upscaler = OnnxUpscaler(find_resource("models"))
+        self.upscale_network: str = UPSCALE_NETWORKS[0]
+        self._upscale_cache: tuple[int, str, int, tuple[int, int, int, int], Image.Image] | None = None
         self._vlc_instance = None
         self._vlc_player = None
 
@@ -276,8 +362,8 @@ class MediaViewerApp:
         self.root.bind("<Button-5>", lambda event: self.adjust_zoom(1 / 1.1, self.cursor_canvas_position(event)))
         self.canvas.bind("<ButtonPress-1>", self.on_drag_start)
         self.canvas.bind("<B1-Motion>", self.on_drag_move)
-        self.root.bind("<a>", self.toggle_ai_upscale)
-        self.root.bind("<A>", self.toggle_ai_upscale)
+        self.root.bind("<a>", self.cycle_upscale_network)
+        self.root.bind("<A>", self.cycle_upscale_network)
         self.root.bind("<F11>", self.toggle_fullscreen)
         self.root.bind("<Escape>", self.exit_fullscreen)
         self.root.bind("<Configure>", self.on_resize)
@@ -331,12 +417,20 @@ class MediaViewerApp:
 
     def update_status(self) -> None:
         mode = "slideshow on" if self.slideshow_enabled else "slideshow off"
-        if not hasattr(cv2, "dnn_superres"):
-            ai_mode = "AI upscale: unavailable (install opencv-contrib-python)"
-        elif self.ai_upscale_enabled:
-            ai_mode = "AI upscale: on"
-        else:
-            ai_mode = "AI upscale: off"
+        network = self.upscale_network
+        if network == "off":
+            ai_mode = "AI: off"
+        elif network in OnnxUpscaler.NETWORKS:
+            label = "SwinIR" if network == "swinir" else "ESRGAN"
+            if not self.onnx_upscaler.available(network):
+                ai_mode = f"AI: {label} (no model)"
+            else:
+                ai_mode = f"AI: {label}"
+        else:  # "espcn"
+            if not hasattr(cv2, "dnn_superres"):
+                ai_mode = "AI: ESPCN (needs opencv-contrib)"
+            else:
+                ai_mode = "AI: ESPCN"
         self.status_var.set(
             f"{self.current_path().name}  |  {self.playlist.index + 1}/{len(self.playlist.files)}"
             f"  |  {mode} ({self.config.slideshow_seconds:g}s)  |  {ai_mode}"
@@ -547,10 +641,18 @@ class MediaViewerApp:
         center_x, center_y = self.image_center or self.viewport_center(viewport_size)
 
         # Apply AI upscaling when zoomed past the original pixel resolution on
-        # static images (not video frames, which change too fast for inference).
-        if scale > 1.0 and self.ai_upscale_enabled and self.video_capture is None:
-            sr_scale = 4 if scale >= 3.0 else 2
-            if self.upscaler.available(sr_scale):
+        # static images only (video frames change too fast for inference).
+        if scale > 1.0 and self.upscale_network != "off" and self.video_capture is None:
+            # Determine scale factor and availability for the selected network.
+            network = self.upscale_network
+            if network in OnnxUpscaler.NETWORKS:
+                upscaler_ok = self.onnx_upscaler.available(network)
+                sr_scale = self.onnx_upscaler.scale_factor(network)
+            else:  # "espcn"
+                sr_scale = 4 if scale >= 3.0 else 2
+                upscaler_ok = self.upscaler.available(sr_scale)
+
+            if upscaler_ok:
                 # Determine the visible portion of the source image in canvas coords.
                 img_canvas_left = center_x - img_w * scale / 2
                 img_canvas_top = center_y - img_h * scale / 2
@@ -568,13 +670,16 @@ class MediaViewerApp:
                     crop_box = (src_left, src_top, src_right, src_bottom)
 
                     # Use cached upscaled crop when view has not changed.
-                    cache_key = (id(self.current_image), sr_scale, crop_box)
-                    if self._upscale_cache is not None and self._upscale_cache[:3] == cache_key:
-                        up_crop = self._upscale_cache[3]
+                    cache_key = (id(self.current_image), network, sr_scale, crop_box)
+                    if self._upscale_cache is not None and self._upscale_cache[:4] == cache_key:
+                        up_crop = self._upscale_cache[4]
                     else:
                         src_crop = self.current_image.crop(crop_box)
-                        up_crop = self.upscaler.upscale(src_crop, sr_scale)
-                        self._upscale_cache = (id(self.current_image), sr_scale, crop_box, up_crop)
+                        if network in OnnxUpscaler.NETWORKS:
+                            up_crop = self.onnx_upscaler.upscale(src_crop, network)
+                        else:
+                            up_crop = self.upscaler.upscale(src_crop, sr_scale)
+                        self._upscale_cache = (id(self.current_image), network, sr_scale, crop_box, up_crop)
 
                     disp_w = max(1, int(round(canvas_right - canvas_left)))
                     disp_h = max(1, int(round(canvas_bottom - canvas_top)))
@@ -715,8 +820,9 @@ class MediaViewerApp:
             self.cancel_slideshow()
         self.update_status()
 
-    def toggle_ai_upscale(self, _event=None) -> None:
-        self.ai_upscale_enabled = not self.ai_upscale_enabled
+    def cycle_upscale_network(self, _event=None) -> None:
+        idx = UPSCALE_NETWORKS.index(self.upscale_network) if self.upscale_network in UPSCALE_NETWORKS else 0
+        self.upscale_network = UPSCALE_NETWORKS[(idx + 1) % len(UPSCALE_NETWORKS)]
         self._upscale_cache = None
         self.render_current_frame()
         self.update_status()
